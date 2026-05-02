@@ -9,7 +9,7 @@ CHAT_ID = str(os.getenv("CHAT_ID"))
 
 # ===== CAPITAL =====
 balance = 100000
-risk_percent = 0.02  # 2% per trade
+risk_percent = 0.02
 
 # ===== STATS =====
 trade_count = 0
@@ -22,9 +22,9 @@ max_drawdown = 0
 
 active_trades = []
 
-# ===== SETTINGS =====
 cooldown = {}
 cooldown_seconds = 300
+
 fee_rate = 0.001  # 0.1%
 
 symbols = [
@@ -37,23 +37,30 @@ def send(msg):
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg}
+            data={"chat_id": CHAT_ID, "text": msg},
+            timeout=5
         )
-    except:
-        pass
+    except Exception as e:
+        print("Telegram error:", e)
 
 # ===== DATA =====
 def get_data(symbol):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=100"
-    data = requests.get(url).json()
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=100"
+        response = requests.get(url, timeout=5)
+        data = response.json()
 
-    df = pd.DataFrame(data)
-    df[4] = df[4].astype(float)
-    df[3] = df[3].astype(float)
+        df = pd.DataFrame(data)
 
-    return df
+        df[4] = df[4].astype(float)
+        df[3] = df[3].astype(float)
 
-# ===== STRATEGY =====
+        return df
+    except Exception as e:
+        print(f"Data error for {symbol}: {e}")
+        return None
+
+# ===== STRATEGY (EMA CROSS) =====
 def check_signal(df):
 
     df["ema50"] = df[4].ewm(span=50).mean()
@@ -91,10 +98,13 @@ def run():
     send("BOT STARTED 🚀")
 
     while True:
+        print("===== LOOP RUNNING =====")
+
         now = time.time()
 
         # ===== ENTRY =====
         for symbol in symbols:
+            print(f"Checking entry for {symbol}")
 
             if any(t["symbol"] == symbol for t in active_trades):
                 continue
@@ -104,22 +114,26 @@ def run():
                     continue
 
             df = get_data(symbol)
+            if df is None:
+                continue
+
             signal = check_signal(df)
 
             if signal:
+                print(f"Signal found for {symbol}")
 
                 entry = signal["entry"]
                 sl = signal["sl"]
                 risk = signal["risk"]
 
                 risk_amount = balance * risk_percent
-
                 qty = risk_amount / risk
 
                 cost = qty * entry
                 fees = cost * fee_rate
 
                 if cost > balance:
+                    print("Not enough balance")
                     continue
 
                 balance -= (cost + fees)
@@ -147,20 +161,26 @@ SL: {sl}
 Target: {signal['target']}
 
 Qty: {qty:.2f}
-Capital Left: {balance:.2f}
+Balance Left: {balance:.2f}
 Time: {trade['entry_time']}
 """)
 
         # ===== MANAGEMENT =====
         for trade in active_trades[:]:
 
-            df = get_data(trade["symbol"])
+            symbol = trade["symbol"]
+            print(f"Managing trade: {symbol}")
+
+            df = get_data(symbol)
+            if df is None:
+                continue
+
             price = df.iloc[-1][4]
 
-            entry = trade["entry"]
-
-            # ===== PARTIAL BOOK =====
+            # ===== PARTIAL =====
             if not trade["partial_done"] and price >= trade["target"]:
+
+                print(f"Partial profit hit for {symbol}")
 
                 sell_qty = trade["qty"] / 2
                 trade["remaining_qty"] -= sell_qty
@@ -170,15 +190,15 @@ Time: {trade['entry_time']}
 
                 balance += (gain - fee)
 
-                trade["sl"] = entry  # move SL to entry
-                trade["target"] = price + (price - entry)
+                trade["sl"] = trade["entry"]
+                trade["target"] = price + (price - trade["entry"])
 
                 trade["partial_done"] = True
 
                 send(f"""
 PARTIAL PROFIT 💰
 
-{trade['symbol']}
+{symbol}
 
 Sold 50%
 New SL: {trade['sl']}
@@ -187,6 +207,8 @@ New Target: {trade['target']}
 
             # ===== EXIT =====
             if price <= trade["sl"]:
+
+                print(f"Exit triggered for {symbol}")
 
                 result = "LOSS" if not trade["partial_done"] else "BREAKEVEN"
 
@@ -198,20 +220,20 @@ New Target: {trade['target']}
                 if result == "LOSS":
                     losses += 1
                     total_R -= 1
-                    cooldown[trade["symbol"]] = time.time()
+                    cooldown[symbol] = time.time()
                 else:
                     wins += 1
 
                 active_trades.remove(trade)
 
-                rr = (price - entry) / (entry - trade["sl"]) if (entry - trade["sl"]) != 0 else 0
+                rr = (price - trade["entry"]) / (trade["entry"] - trade["sl"]) if (trade["entry"] - trade["sl"]) != 0 else 0
 
                 send(f"""
 TRADE CLOSED {result}
 
-{trade['symbol']}
+{symbol}
 
-Entry: {entry}
+Entry: {trade['entry']}
 Exit: {price}
 RR: {rr:.2f}
 
