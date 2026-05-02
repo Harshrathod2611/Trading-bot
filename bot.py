@@ -65,46 +65,29 @@ def get_data(symbol):
 
 # ===== STRATEGY (EMA CROSSOVER) =====
 def check_signal(df):
-    # EMA
-    df["ema20"] = df[4].ewm(span=20).mean()
 
-    # RSI
-    delta = df[4].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / loss
-    df["rsi"] = 100 - (100 / (1 + rs))
+    c = df.iloc[-1]
 
-    prev = df.iloc[-2]
-    curr = df.iloc[-1]
+    open_price = float(c[1])
+    close_price = float(c[4])
+    high = float(c[2])
+    low = float(c[3])
 
-    # ===== TREND =====
-    trend = curr[4] > curr["ema20"] and curr["ema20"] > prev["ema20"]
+    body = abs(close_price - open_price)
 
-    # ===== RSI PULLBACK =====
-    rsi_pullback = prev["rsi"] < 40
+    # condition: strong bullish candle
+    if close_price > open_price and body > (0.002 * close_price):
 
-    # ===== ENTRY TRIGGER =====
-    rsi_cross = prev["rsi"] <= 40 and curr["rsi"] > 40
-
-    if trend and rsi_pullback and rsi_cross:
-
-        entry = curr[4]
-
-        sl = min(
-            df.iloc[-1][3],
-            df.iloc[-2][3],
-            df.iloc[-3][3],
-            df.iloc[-4][3],
-            df.iloc[-5][3]
-        )
+        entry = close_price
+        sl = low
 
         risk = entry - sl
-
         if risk <= 0:
             return None
 
         target = entry + (2 * risk)
+
+        print("Momentum candle detected 🚀")
 
         return {
             "entry": entry,
