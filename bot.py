@@ -67,17 +67,42 @@ def get_data(symbol):
 
 # ===== STRATEGY (TEST - MOMENTUM CANDLE) =====
 def check_signal(df):
-    c = df.iloc[-1]
 
-    open_price = c[1]
-    close_price = c[4]
-    low = c[3]
+    # EMA
+    df["ema20"] = df[4].ewm(span=20).mean()
 
-    body = abs(close_price - open_price)
+    # RSI
+    delta = df[4].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / loss
+    df["rsi"] = 100 - (100 / (1 + rs))
 
-    if close_price > open_price and body > (0.002 * close_price):
-        entry = close_price
-        sl = low
+    prev = df.iloc[-2]
+    curr = df.iloc[-1]
+
+    price = curr[4]
+
+    # ===== TREND =====
+    trend = price > curr["ema20"] and curr["ema20"] > prev["ema20"]
+
+    # ===== PULLBACK =====
+    pullback = curr["rsi"] < 45 or price <= curr["ema20"] * 1.002
+
+    # ===== ENTRY =====
+    bullish = curr[4] > curr[1]
+
+    if trend and pullback and bullish:
+
+        entry = price
+
+        sl = min(
+            df.iloc[-1][3],
+            df.iloc[-2][3],
+            df.iloc[-3][3],
+            df.iloc[-4][3],
+            df.iloc[-5][3]
+        )
 
         risk = entry - sl
         if risk <= 0:
@@ -85,7 +110,7 @@ def check_signal(df):
 
         target = entry + (2 * risk)
 
-        print("Momentum candle detected 🚀")
+        print("TREND PULLBACK SIGNAL 🚀")
 
         return {
             "entry": entry,
