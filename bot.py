@@ -4,14 +4,14 @@ import time
 import os
 from datetime import datetime
 
-# ===== CONFIG =====
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = str(os.getenv("CHAT_ID"))
 
-# ===== GLOBAL STATE =====
+# ===== CAPITAL =====
 balance = 100000
-risk_percent = 0.01
+risk_percent = 0.02  # 2% per trade
 
+# ===== STATS =====
 trade_count = 0
 wins = 0
 losses = 0
@@ -21,29 +21,26 @@ peak_balance = balance
 max_drawdown = 0
 
 active_trades = []
-last_loss_time = {}
 
+# ===== SETTINGS =====
+cooldown = {}
 cooldown_seconds = 300
+fee_rate = 0.001  # 0.1%
 
-# ===== 30 DIVERSE COINS =====
 symbols = [
     "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
-    "ADAUSDT","DOGEUSDT","LINKUSDT","AVAXUSDT","MATICUSDT",
-    "LTCUSDT","TRXUSDT","ATOMUSDT","NEARUSDT","FTMUSDT",
-    "SANDUSDT","APEUSDT","AXSUSDT","GALAUSDT","ALGOUSDT",
-    "ICPUSDT","FILUSDT","ETCUSDT","EGLDUSDT","THETAUSDT",
-    "AAVEUSDT","UNIUSDT","XLMUSDT","HBARUSDT","VETUSDT"
+    "ADAUSDT","DOGEUSDT","LINKUSDT","AVAXUSDT","MATICUSDT"
 ]
 
 # ===== TELEGRAM =====
-def send_telegram(msg):
+def send(msg):
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             data={"chat_id": CHAT_ID, "text": msg}
         )
     except:
-        print("Telegram failed")
+        pass
 
 # ===== DATA =====
 def get_data(symbol):
@@ -51,28 +48,24 @@ def get_data(symbol):
     data = requests.get(url).json()
 
     df = pd.DataFrame(data)
-
-    df[1] = df[1].astype(float)
-    df[2] = df[2].astype(float)
-    df[3] = df[3].astype(float)
     df[4] = df[4].astype(float)
+    df[3] = df[3].astype(float)
 
     return df
 
-# ===== RSI STRATEGY (CANDLE CLOSE BASED) =====
+# ===== STRATEGY =====
 def check_signal(df):
 
-    delta = df[4].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / loss
-    df["rsi"] = 100 - (100 / (1 + rs))
+    df["ema50"] = df[4].ewm(span=50).mean()
+    df["ema120"] = df[4].ewm(span=120).mean()
 
+    prev = df.iloc[-2]
     curr = df.iloc[-1]
 
-    if curr["rsi"] <= 35:
-        entry = curr[4]
+    cross = prev["ema50"] < prev["ema120"] and curr["ema50"] > curr["ema120"]
 
+    if cross:
+        entry = curr[4]
         sl = min(df.iloc[-5:][3])
 
         risk = entry - sl
@@ -84,142 +77,147 @@ def check_signal(df):
         return {
             "entry": entry,
             "sl": sl,
-            "target": target
+            "target": target,
+            "risk": risk
         }
 
     return None
 
-# ===== MAIN LOOP =====
+# ===== MAIN =====
 def run():
-    global balance, wins, losses, total_R, trade_count
+    global balance, trade_count, wins, losses, total_R
     global peak_balance, max_drawdown
 
-    send_telegram("BOT STARTED ✅")
+    send("BOT STARTED 🚀")
 
     while True:
-
         now = time.time()
 
-        # =====================
-        # 1. CHECK NEW ENTRIES (every 60 sec)
-        # =====================
+        # ===== ENTRY =====
         for symbol in symbols:
 
-            # skip if already in trade
             if any(t["symbol"] == symbol for t in active_trades):
                 continue
 
-            # cooldown check
-            if symbol in last_loss_time:
-                if now - last_loss_time[symbol] < cooldown_seconds:
+            if symbol in cooldown:
+                if now - cooldown[symbol] < cooldown_seconds:
                     continue
 
-            try:
-                df = get_data(symbol)
-            except:
-                continue
-
+            df = get_data(symbol)
             signal = check_signal(df)
 
             if signal:
 
-                entry_time = datetime.now().strftime("%H:%M:%S")
+                entry = signal["entry"]
+                sl = signal["sl"]
+                risk = signal["risk"]
 
                 risk_amount = balance * risk_percent
-                risk_per_unit = signal["entry"] - signal["sl"]
 
-                if risk_per_unit <= 0:
+                qty = risk_amount / risk
+
+                cost = qty * entry
+                fees = cost * fee_rate
+
+                if cost > balance:
                     continue
+
+                balance -= (cost + fees)
 
                 trade = {
                     "symbol": symbol,
-                    "entry": signal["entry"],
-                    "sl": signal["sl"],
+                    "entry": entry,
+                    "sl": sl,
                     "target": signal["target"],
-                    "risk": risk_amount,
-                    "entry_time": entry_time
+                    "qty": qty,
+                    "remaining_qty": qty,
+                    "partial_done": False,
+                    "entry_time": datetime.now().strftime("%H:%M:%S"),
+                    "risk": risk_amount
                 }
 
                 active_trades.append(trade)
                 trade_count += 1
 
-                send_telegram(f"""
-TRADE OPENED 🚀
+                send(f"""
+BUY 🚀 {symbol}
 
-{symbol}
-Entry: {signal['entry']}
-SL: {signal['sl']}
+Entry: {entry}
+SL: {sl}
 Target: {signal['target']}
 
-Time: {entry_time}
+Qty: {qty:.2f}
+Capital Left: {balance:.2f}
+Time: {trade['entry_time']}
 """)
 
-        # =====================
-        # 2. MANAGE TRADES (every loop ~2 sec)
-        # =====================
+        # ===== MANAGEMENT =====
         for trade in active_trades[:]:
 
-            symbol = trade["symbol"]
-
-            try:
-                df = get_data(symbol)
-            except:
-                continue
-
+            df = get_data(trade["symbol"])
             price = df.iloc[-1][4]
 
-            result = None
+            entry = trade["entry"]
 
+            # ===== PARTIAL BOOK =====
+            if not trade["partial_done"] and price >= trade["target"]:
+
+                sell_qty = trade["qty"] / 2
+                trade["remaining_qty"] -= sell_qty
+
+                gain = sell_qty * price
+                fee = gain * fee_rate
+
+                balance += (gain - fee)
+
+                trade["sl"] = entry  # move SL to entry
+                trade["target"] = price + (price - entry)
+
+                trade["partial_done"] = True
+
+                send(f"""
+PARTIAL PROFIT 💰
+
+{trade['symbol']}
+
+Sold 50%
+New SL: {trade['sl']}
+New Target: {trade['target']}
+""")
+
+            # ===== EXIT =====
             if price <= trade["sl"]:
-                result = "LOSS"
-                losses += 1
-                balance -= trade["risk"]
-                total_R -= 1
-                last_loss_time[symbol] = time.time()
 
-            elif price >= trade["target"]:
-                result = "WIN"
-                wins += 1
-                balance += trade["risk"] * 2
-                total_R += 2
+                result = "LOSS" if not trade["partial_done"] else "BREAKEVEN"
 
-            if result:
+                final_value = trade["remaining_qty"] * price
+                fee = final_value * fee_rate
 
-                exit_time = datetime.now().strftime("%H:%M:%S")
+                balance += (final_value - fee)
+
+                if result == "LOSS":
+                    losses += 1
+                    total_R -= 1
+                    cooldown[trade["symbol"]] = time.time()
+                else:
+                    wins += 1
 
                 active_trades.remove(trade)
 
-                if balance > peak_balance:
-                    peak_balance = balance
+                rr = (price - entry) / (entry - trade["sl"]) if (entry - trade["sl"]) != 0 else 0
 
-                dd = (peak_balance - balance) / peak_balance * 100
-                max_drawdown = max(max_drawdown, dd)
-
-                win_rate = (wins / trade_count) * 100 if trade_count else 0
-                expectancy = total_R / trade_count if trade_count else 0
-
-                send_telegram(f"""
+                send(f"""
 TRADE CLOSED {result}
 
-{symbol}
+{trade['symbol']}
 
-Entry: {trade['entry']}
+Entry: {entry}
 Exit: {price}
-
-Entry Time: {trade['entry_time']}
-Exit Time: {exit_time}
+RR: {rr:.2f}
 
 Balance: {balance:.2f}
-
-Trades: {trade_count}
-Win Rate: {win_rate:.2f}%
-Expectancy: {expectancy:.2f}
-Max DD: {max_drawdown:.2f}%
 """)
 
-        # =====================
-        # LOOP SPEED
-        # =====================
         time.sleep(2)
 
 run()
