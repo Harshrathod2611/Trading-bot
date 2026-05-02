@@ -4,13 +4,14 @@ import pandas as pd
 import requests
 import time
 import os
-print("TOKEN:", TELEGRAM_TOKEN)
-print("CHAT_ID:", CHAT_ID)
 
 # ===== CONFIG =====
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+
+print("TOKEN:", TELEGRAM_TOKEN)
+print("CHAT_ID:", CHAT_ID)
 
 client = Client()
 
