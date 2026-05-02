@@ -1,0 +1,243 @@
+# telegram token: 8772354059:AAFhIlgyaVZTxx4MqhpeLyMXd2XpjA_dzFc
+# client id: 6197832501
+
+from binance.client import Client
+from binance.client import Client
+import pandas as pd
+import requests
+import time
+
+# ===== CONFIG =====
+TELEGRAM_TOKEN = "8772354059:AAFhIlgyaVZTxx4MqhpeLyMXd2XpjA_dzFc"
+CHAT_ID = "6197832501"
+
+client = Client()
+
+# ===== GLOBAL STATE =====
+balance = 100000
+risk_percent = 0.01
+
+trade_count = 0
+wins = 0
+losses = 0
+total_R = 0
+
+peak_balance = balance
+max_drawdown = 0
+
+active_trades = []
+
+symbols = [
+    "BTCUSDT",   # market leader (slow, stable)
+    "ETHUSDT",   # strong trends
+    "BNBUSDT",   # exchange-driven moves
+    "SOLUSDT",   # fast momentum
+    "XRPUSDT",   # spike behavior
+    "ADAUSDT",   # smoother moves
+    "DOGEUSDT",  # high volatility (chaotic)
+    "LINKUSDT",  # DeFi (clean trends sometimes)
+    "AVAXUSDT",  # breakout style
+    "MATICUSDT"  # mixed structure
+]
+
+# ===== TELEGRAM =====
+def send_telegram(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    requests.post(url, data={"chat_id": CHAT_ID, "text": message})
+    print(message)
+
+# ===== DATA =====
+def get_data(symbol):
+    klines = client.get_klines(
+        symbol=symbol,
+        interval=Client.KLINE_INTERVAL_1MINUTE,
+        limit=100
+    )
+
+    df = pd.DataFrame(klines)
+
+    df[1] = df[1].astype(float)
+    df[2] = df[2].astype(float)
+    df[3] = df[3].astype(float)
+    df[4] = df[4].astype(float)
+
+    return df
+
+# ===== STRATEGY (EMA CROSSOVER) =====
+def check_signal(df):
+    # EMA
+    df["ema20"] = df[4].ewm(span=20).mean()
+
+    # RSI
+    delta = df[4].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / loss
+    df["rsi"] = 100 - (100 / (1 + rs))
+
+    prev = df.iloc[-2]
+    curr = df.iloc[-1]
+
+    # ===== TREND =====
+    trend = curr[4] > curr["ema20"] and curr["ema20"] > prev["ema20"]
+
+    # ===== RSI PULLBACK =====
+    rsi_pullback = prev["rsi"] < 40
+
+    # ===== ENTRY TRIGGER =====
+    rsi_cross = prev["rsi"] <= 40 and curr["rsi"] > 40
+
+    if trend and rsi_pullback and rsi_cross:
+
+        entry = curr[4]
+
+        sl = min(
+            df.iloc[-1][3],
+            df.iloc[-2][3],
+            df.iloc[-3][3],
+            df.iloc[-4][3],
+            df.iloc[-5][3]
+        )
+
+        risk = entry - sl
+
+        if risk <= 0:
+            return None
+
+        target = entry + (2 * risk)
+
+        return {
+            "entry": entry,
+            "sl": sl,
+            "target": target
+        }
+
+    return None
+
+
+def has_active_trade(symbol):
+    for trade in active_trades:
+        if trade["symbol"] == symbol:
+            return True
+    return False
+
+# ===== MAIN LOOP =====
+def run():
+    global balance, trade_count, wins, losses
+    global total_R, peak_balance, max_drawdown
+
+    while True:
+        print("Running check...")
+
+        for symbol in symbols:
+
+            try:
+                df = get_data(symbol)
+            except Exception as e:
+                print("API Error:", e)
+                continue
+
+            price = df.iloc[-1][4]
+
+            # ===== OPEN TRADES =====
+            signal = check_signal(df)
+
+            if signal and not has_active_trade(symbol):
+                risk_amount = balance * risk_percent
+                entry = signal["entry"]
+                sl = signal["sl"]
+
+                risk_per_unit = entry - sl
+                if risk_per_unit <= 0:
+                    continue
+
+                quantity = risk_amount / risk_per_unit
+
+                trade = {
+                    "symbol": symbol,
+                    "entry": entry,
+                    "sl": sl,
+                    "target": signal["target"],
+                    "quantity": quantity,
+                    "risk_amount": risk_amount
+                }
+
+                active_trades.append(trade)
+                trade_count += 1
+
+                msg = f"""
+TRADE OPENED 🚀
+
+Symbol: {symbol}
+Entry: {entry}
+SL: {sl}
+Target: {signal['target']}
+
+Balance: {balance:.2f}
+"""
+                send_telegram(msg)
+
+            # ===== MANAGE TRADES =====
+            for trade in active_trades[:]:
+                if trade["symbol"] != symbol:
+                    continue
+
+                entry = trade["entry"]
+                sl = trade["sl"]
+                target = trade["target"]
+
+                # LOSS
+                if price <= sl:
+                    losses += 1
+                    loss_amount = trade["risk_amount"]
+                    balance -= loss_amount
+                    total_R -= 1
+
+                    active_trades.remove(trade)
+
+                # WIN
+                elif price >= target:
+                    wins += 1
+                    profit = trade["risk_amount"] * 2
+                    balance += profit
+                    total_R += 2
+
+                    active_trades.remove(trade)
+
+                else:
+                    continue
+
+                # ===== DRAWDOWN =====
+                if balance > peak_balance:
+                    peak_balance = balance
+
+                drawdown = (peak_balance - balance) / peak_balance * 100
+
+                if drawdown > max_drawdown:
+                    max_drawdown = drawdown
+
+                win_rate = (wins / trade_count) * 100 if trade_count > 0 else 0
+                expectancy = total_R / trade_count if trade_count > 0 else 0
+
+                msg = f"""
+TRADE CLOSED
+
+Symbol: {symbol}
+
+Balance: {balance:.2f}
+
+Trades: {trade_count}
+Wins: {wins}
+Losses: {losses}
+
+Win Rate: {win_rate:.2f}%
+Total R: {total_R}
+Expectancy: {expectancy:.2f}
+
+Max DD: {max_drawdown:.2f}%
+"""
+                send_telegram(msg)
+
+        time.sleep(5)
+
+run()
