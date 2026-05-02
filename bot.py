@@ -170,34 +170,71 @@ Balance: {balance:.2f}
                 send_telegram(msg)
 
             # ===== MANAGE TRADES =====
-            for trade in active_trades[:]:
-                if trade["symbol"] != symbol:
-                    continue
+          # ===== MANAGE TRADES =====
+for trade in active_trades[:]:
+    if trade["symbol"] != symbol:
+        continue
 
-                entry = trade["entry"]
-                sl = trade["sl"]
-                target = trade["target"]
+    entry = trade["entry"]
+    sl = trade["sl"]
+    target = trade["target"]
 
-                # LOSS
-                if price <= sl:
-                    losses += 1
-                    loss_amount = trade["risk_amount"]
-                    balance -= loss_amount
-                    total_R -= 1
+    exit_price = price
+    result = None
 
-                    active_trades.remove(trade)
+    # LOSS
+    if price <= sl:
+        result = "LOSS"
+        losses += 1
+        loss_amount = trade["risk_amount"]
+        balance -= loss_amount
+        total_R -= 1
 
-                # WIN
-                elif price >= target:
-                    wins += 1
-                    profit = trade["risk_amount"] * 2
-                    balance += profit
-                    total_R += 2
+    # WIN
+    elif price >= target:
+        result = "WIN"
+        wins += 1
+        profit = trade["risk_amount"] * 2
+        balance += profit
+        total_R += 2
 
-                    active_trades.remove(trade)
+    if result:
+        active_trades.remove(trade)
 
-                else:
-                    continue
+        # Drawdown update
+        global peak_balance, max_drawdown
+        if balance > peak_balance:
+            peak_balance = balance
+
+        drawdown = (peak_balance - balance) / peak_balance * 100
+        if drawdown > max_drawdown:
+            max_drawdown = drawdown
+
+        win_rate = (wins / trade_count) * 100 if trade_count > 0 else 0
+        expectancy = total_R / trade_count if trade_count > 0 else 0
+
+        msg = f"""
+TRADE CLOSED {result}
+
+Symbol: {symbol}
+
+Entry: {entry}
+Exit: {exit_price}
+
+Balance: {balance:.2f}
+
+Trades: {trade_count}
+Wins: {wins}
+Losses: {losses}
+
+Win Rate: {win_rate:.2f}%
+Total R: {total_R}
+Expectancy: {expectancy:.2f}
+
+Max DD: {max_drawdown:.2f}%
+"""
+        send_telegram(msg)
+        print(msg)
 
                 # ===== DRAWDOWN =====
                 if balance > peak_balance:
