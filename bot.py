@@ -6,10 +6,13 @@ from binance.client import Client
 import pandas as pd
 import requests
 import time
+import os
+
 
 # ===== CONFIG =====
-TELEGRAM_TOKEN = "8772354059:AAFhIlgyaVZTxx4MqhpeLyMXd2XpjA_dzFc"
-CHAT_ID = "6197832501"
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 client = Client()
 
