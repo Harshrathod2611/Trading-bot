@@ -1,6 +1,3 @@
-# telegram token: 8772354059:AAFhIlgyaVZTxx4MqhpeLyMXd2XpjA_dzFc
-# client id: 6197832501
-
 from binance.client import Client
 from binance.client import Client
 import pandas as pd
