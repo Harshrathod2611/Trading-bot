@@ -43,8 +43,12 @@ symbols = [
 # ===== TELEGRAM =====
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": message})
-    print(message)
+    response = requests.post(url, data={
+        "chat_id": CHAT_ID,
+        "text": message
+    })
+
+    print("Telegram response:", response.text)
 
 # ===== DATA =====
 def get_data(symbol):
