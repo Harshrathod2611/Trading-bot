@@ -4,7 +4,8 @@ import pandas as pd
 import requests
 import time
 import os
-
+print("TOKEN:", TELEGRAM_TOKEN)
+print("CHAT_ID:", CHAT_ID)
 
 # ===== CONFIG =====
 
