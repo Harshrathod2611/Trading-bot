@@ -2,6 +2,7 @@ import pandas as pd
 import requests
 import time
 import os
+from datetime import datetime
 
 # ===== CONFIG =====
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -20,6 +21,10 @@ peak_balance = balance
 max_drawdown = 0
 
 active_trades = []
+
+# cooldown tracking per symbol
+last_loss_time = {}
+cooldown_seconds = 300  # 5 minutes
 
 symbols = [
     "BTCUSDT",
@@ -47,7 +52,7 @@ def send_telegram(message):
             "chat_id": CHAT_ID,
             "text": message
         })
-        print("Telegram response:", response.text)
+        print("Telegram:", response.text)
     except Exception as e:
         print("Telegram error:", e)
 
@@ -58,41 +63,26 @@ def get_data(symbol):
 
     df = pd.DataFrame(data)
 
-    df[1] = df[1].astype(float)  # open
-    df[2] = df[2].astype(float)  # high
-    df[3] = df[3].astype(float)  # low
-    df[4] = df[4].astype(float)  # close
+    df[1] = df[1].astype(float)
+    df[2] = df[2].astype(float)
+    df[3] = df[3].astype(float)
+    df[4] = df[4].astype(float)
 
     return df
 
-# ===== STRATEGY (TEST - MOMENTUM CANDLE) =====
+# ===== STRATEGY (RSI <= 35) =====
 def check_signal(df):
 
-    # EMA
-    df["ema20"] = df[4].ewm(span=20).mean()
-
-    # RSI
     delta = df[4].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss
     df["rsi"] = 100 - (100 / (1 + rs))
 
-    prev = df.iloc[-2]
     curr = df.iloc[-1]
-
     price = curr[4]
 
-    # ===== TREND =====
-    trend = price > curr["ema20"] and curr["ema20"] > prev["ema20"]
-
-    # ===== PULLBACK =====
-    pullback = curr["rsi"] < 45 or price <= curr["ema20"] * 1.002
-
-    # ===== ENTRY =====
-    bullish = curr[4] > curr[1]
-
-    if trend and pullback and bullish:
+    if curr["rsi"] <= 35:
 
         entry = price
 
@@ -110,7 +100,7 @@ def check_signal(df):
 
         target = entry + (2 * risk)
 
-        print("TREND PULLBACK SIGNAL 🚀")
+        print("RSI SIGNAL 🚀")
 
         return {
             "entry": entry,
@@ -137,6 +127,14 @@ def run():
         print("Running check...")
 
         for symbol in symbols:
+
+            now = time.time()
+
+            # ===== COOLDOWN CHECK =====
+            if symbol in last_loss_time:
+                if now - last_loss_time[symbol] < cooldown_seconds:
+                    continue
+
             try:
                 df = get_data(symbol)
             except Exception as e:
@@ -149,6 +147,9 @@ def run():
             signal = check_signal(df)
 
             if signal and not has_active_trade(symbol):
+
+                entry_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
                 risk_amount = balance * risk_percent
                 entry = signal["entry"]
                 sl = signal["sl"]
@@ -165,7 +166,8 @@ def run():
                     "sl": sl,
                     "target": signal["target"],
                     "quantity": quantity,
-                    "risk_amount": risk_amount
+                    "risk_amount": risk_amount,
+                    "entry_time": entry_time
                 }
 
                 active_trades.append(trade)
@@ -178,6 +180,8 @@ Symbol: {symbol}
 Entry: {entry}
 SL: {sl}
 Target: {signal['target']}
+
+Time: {entry_time}
 
 Balance: {balance:.2f}
 """
@@ -202,6 +206,9 @@ Balance: {balance:.2f}
                     balance -= trade["risk_amount"]
                     total_R -= 1
 
+                    # start cooldown
+                    last_loss_time[symbol] = time.time()
+
                 elif price >= target:
                     result = "WIN"
                     wins += 1
@@ -210,6 +217,8 @@ Balance: {balance:.2f}
                     total_R += 2
 
                 if result:
+                    exit_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
                     active_trades.remove(trade)
 
                     if balance > peak_balance:
@@ -229,6 +238,9 @@ Symbol: {symbol}
 
 Entry: {entry}
 Exit: {exit_price}
+
+Entry Time: {trade['entry_time']}
+Exit Time: {exit_time}
 
 Balance: {balance:.2f}
 
