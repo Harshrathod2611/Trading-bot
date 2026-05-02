@@ -106,6 +106,9 @@ def has_active_trade(symbol):
 
 # ===== MAIN LOOP =====
 def run():
+
+    send_telegram("TEST MESSAGE 🚀")
+    
     global balance, trade_count, wins, losses
     global total_R, peak_balance, max_drawdown
 
