@@ -2,11 +2,11 @@ import yfinance as yf
 import pandas as pd
 import time
 import requests
+import os
 from datetime import datetime
+import pytz
 
 # ===== TELEGRAM CONFIG =====
-import os
-
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
@@ -14,10 +14,11 @@ def send(msg):
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg}
+            data={"chat_id": CHAT_ID, "text": msg},
+            timeout=5
         )
     except:
-        pass
+        print("Telegram failed")
 
 # ===== SYMBOLS =====
 symbols = [
@@ -33,10 +34,16 @@ range_data = {}
 active_trades = []
 done_stocks = set()
 
+# ===== TIMEZONE =====
+ist = pytz.timezone('Asia/Kolkata')
+
 # ===== DATA =====
 def get_data(symbol):
     try:
         df = yf.download(symbol, interval="5m", period="1d", progress=False)
+        if df is None or df.empty:
+            return None
+
         df = df.reset_index()
 
         df.rename(columns={
@@ -47,7 +54,8 @@ def get_data(symbol):
         }, inplace=True)
 
         return df
-    except:
+    except Exception as e:
+        print(f"Data error {symbol}: {e}")
         return None
 
 # ===== MAIN =====
@@ -58,8 +66,13 @@ def run():
 
     while True:
 
-        now = datetime.now()
+        now = datetime.now(ist)
         current_time = now.strftime("%H:%M")
+
+        # ===== MARKET HOURS FILTER =====
+        if current_time < "09:15" or current_time > "15:30":
+            time.sleep(60)
+            continue
 
         # ===== BUILD RANGE =====
         if "09:15" <= current_time <= "09:30":
@@ -105,11 +118,14 @@ def run():
                 high = range_data[symbol]["high"]
                 low = range_data[symbol]["low"]
 
-                # BUY
+                # ===== BUY =====
                 if close > high:
                     entry = close
                     sl = low
                     risk = entry - sl
+
+                    if risk <= 0:
+                        continue
 
                     trade = {
                         "symbol": symbol,
@@ -123,13 +139,16 @@ def run():
                     active_trades.append(trade)
                     done_stocks.add(symbol)
 
-                    send(f"BUY 🚀 {symbol}\nEntry: {entry}\nSL: {sl}")
+                    send(f"BUY 🚀 {symbol}\nEntry: {entry:.2f}\nSL: {sl:.2f}")
 
-                # SELL
+                # ===== SELL =====
                 elif close < low:
                     entry = close
                     sl = high
                     risk = sl - entry
+
+                    if risk <= 0:
+                        continue
 
                     trade = {
                         "symbol": symbol,
@@ -143,9 +162,9 @@ def run():
                     active_trades.append(trade)
                     done_stocks.add(symbol)
 
-                    send(f"SELL 🔻 {symbol}\nEntry: {entry}\nSL: {sl}")
+                    send(f"SELL 🔻 {symbol}\nEntry: {entry:.2f}\nSL: {sl:.2f}")
 
-        # ===== MANAGEMENT =====
+        # ===== TRADE MANAGEMENT =====
         for trade in active_trades[:]:
 
             df = get_data(trade["symbol"])
@@ -156,7 +175,6 @@ def run():
             prev = df.iloc[-2]
 
             price = last["close"]
-
             entry = trade["entry"]
             risk = trade["risk"]
 
@@ -166,12 +184,12 @@ def run():
                 if trade["type"] == "BUY" and price >= entry + risk:
                     trade["partial"] = True
                     trade["sl"] = entry
-                    send(f"PARTIAL PROFIT 💰 {trade['symbol']}")
+                    send(f"PARTIAL 💰 {trade['symbol']}")
 
                 elif trade["type"] == "SELL" and price <= entry - risk:
                     trade["partial"] = True
                     trade["sl"] = entry
-                    send(f"PARTIAL PROFIT 💰 {trade['symbol']}")
+                    send(f"PARTIAL 💰 {trade['symbol']}")
 
             # ===== TRAILING =====
             if trade["partial"]:
@@ -188,11 +206,11 @@ def run():
 
             # ===== EXIT =====
             if trade["type"] == "BUY" and price <= trade["sl"]:
-                send(f"EXIT 🚪 BUY {trade['symbol']} @ {price}")
+                send(f"EXIT 🚪 BUY {trade['symbol']} @ {price:.2f}")
                 active_trades.remove(trade)
 
             elif trade["type"] == "SELL" and price >= trade["sl"]:
-                send(f"EXIT 🚪 SELL {trade['symbol']} @ {price}")
+                send(f"EXIT 🚪 SELL {trade['symbol']} @ {price:.2f}")
                 active_trades.remove(trade)
 
         time.sleep(60)
