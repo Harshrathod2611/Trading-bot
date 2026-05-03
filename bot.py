@@ -5,8 +5,8 @@ import requests
 from datetime import datetime
 
 # ===== TELEGRAM CONFIG =====
-TELEGRAM_TOKEN = "YOUR_TOKEN"
-CHAT_ID = "YOUR_CHAT_ID"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = str(os.getenv("CHAT_ID"))
 
 def send(msg):
     try:
