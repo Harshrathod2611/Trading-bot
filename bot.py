@@ -1,201 +1,198 @@
+import yfinance as yf
 import pandas as pd
-import requests
 import time
-import os
+import requests
 from datetime import datetime
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = str(os.getenv("CHAT_ID"))
-
-balance = 100000
-risk_percent = 0.02
-fee_rate = 0.001
-
-active_trades = []
-cooldown = {}
-
-last_log_time = 0
-log_interval = 10
-
-symbols = [
-    "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
-    "ADAUSDT","DOGEUSDT","LINKUSDT","AVAXUSDT","MATICUSDT"
-]
+# ===== TELEGRAM CONFIG =====
+TELEGRAM_TOKEN = "YOUR_TOKEN"
+CHAT_ID = "YOUR_CHAT_ID"
 
 def send(msg):
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg},
-            timeout=5
+            data={"chat_id": CHAT_ID, "text": msg}
         )
     except:
         pass
 
+# ===== SYMBOLS =====
+symbols = [
+    "RELIANCE.NS","HDFCBANK.NS","ICICIBANK.NS","AXISBANK.NS",
+    "KOTAKBANK.NS","TATASTEEL.NS","JSWSTEEL.NS","ITC.NS",
+    "HINDUNILVR.NS","LT.NS","BHARTIARTL.NS","POWERGRID.NS"
+]
+
+balance = 100000
+risk_percent = 0.02
+
+range_data = {}
+active_trades = []
+done_stocks = set()
+
+# ===== DATA =====
 def get_data(symbol):
     try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=100"
-        response = requests.get(url, timeout=5)
-        df = pd.DataFrame(response.json())
+        df = yf.download(symbol, interval="5m", period="1d", progress=False)
+        df = df.reset_index()
 
-        df[4] = df[4].astype(float)
-        df[3] = df[3].astype(float)
+        df.rename(columns={
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close"
+        }, inplace=True)
 
         return df
     except:
         return None
 
-def check_signal(df):
-
-    df["ema50"] = df[4].ewm(span=50).mean()
-    df["ema120"] = df[4].ewm(span=120).mean()
-
-    prev = df.iloc[-2]
-    curr = df.iloc[-1]
-
-    cross = prev["ema50"] <= prev["ema120"] and curr["ema50"] > curr["ema120"]
-
-    if cross:
-        entry = curr[4]
-        sl = min(df.iloc[-5:][3])
-
-        risk = entry - sl
-        if risk <= 0:
-            return None
-
-        return {
-            "entry": entry,
-            "sl": sl,
-            "risk": risk
-        }
-
-    return None
-
+# ===== MAIN =====
 def run():
-    global balance, last_log_time
+    global balance
 
-    send("BOT STARTED 🚀")
+    send("ORB BOT STARTED 🚀")
 
     while True:
-        now = time.time()
 
-        # ===== HEARTBEAT =====
-        if now - last_log_time > log_interval:
-            print(f"Alive | Balance: {balance:.2f} | Trades: {len(active_trades)}")
-            last_log_time = now
+        now = datetime.now()
+        current_time = now.strftime("%H:%M")
 
-        # ===== ENTRY =====
-        for symbol in symbols:
+        # ===== BUILD RANGE =====
+        if "09:15" <= current_time <= "09:30":
 
-            if any(t["symbol"] == symbol for t in active_trades):
-                continue
-
-            df = get_data(symbol)
-            if df is None:
-                continue
-
-            signal = check_signal(df)
-
-            if signal:
-                entry = signal["entry"]
-                sl = signal["sl"]
-                risk = signal["risk"]
-
-                risk_amount = balance * risk_percent
-                qty = risk_amount / risk
-
-                cost = qty * entry
-                fee = cost * fee_rate
-
-                if cost > balance:
+            for symbol in symbols:
+                df = get_data(symbol)
+                if df is None or len(df) == 0:
                     continue
 
-                balance -= (cost + fee)
+                last = df.iloc[-1]
 
-                trade = {
-                    "symbol": symbol,
-                    "entry": entry,
-                    "sl": sl,
-                    "qty": qty,
-                    "remaining_qty": qty,
-                    "partial_done": False,
-                    "entry_time": datetime.now().strftime("%H:%M:%S"),
-                    "risk": risk,
-                    "trail_sl": sl
-                }
+                if symbol not in range_data:
+                    range_data[symbol] = {
+                        "high": last["high"],
+                        "low": last["low"]
+                    }
+                else:
+                    range_data[symbol]["high"] = max(
+                        range_data[symbol]["high"], last["high"]
+                    )
+                    range_data[symbol]["low"] = min(
+                        range_data[symbol]["low"], last["low"]
+                    )
 
-                active_trades.append(trade)
+        # ===== BREAKOUT =====
+        if current_time > "09:30":
 
-                send(f"""
-BUY 🚀 {symbol}
+            for symbol in symbols:
 
-Entry: {entry}
-SL: {sl}
-Qty: {qty:.2f}
+                if symbol in done_stocks:
+                    continue
 
-Balance: {balance:.2f}
-""")
+                if symbol not in range_data:
+                    continue
+
+                df = get_data(symbol)
+                if df is None or len(df) < 2:
+                    continue
+
+                last = df.iloc[-1]
+                close = last["close"]
+
+                high = range_data[symbol]["high"]
+                low = range_data[symbol]["low"]
+
+                # BUY
+                if close > high:
+                    entry = close
+                    sl = low
+                    risk = entry - sl
+
+                    trade = {
+                        "symbol": symbol,
+                        "type": "BUY",
+                        "entry": entry,
+                        "sl": sl,
+                        "risk": risk,
+                        "partial": False
+                    }
+
+                    active_trades.append(trade)
+                    done_stocks.add(symbol)
+
+                    send(f"BUY 🚀 {symbol}\nEntry: {entry}\nSL: {sl}")
+
+                # SELL
+                elif close < low:
+                    entry = close
+                    sl = high
+                    risk = sl - entry
+
+                    trade = {
+                        "symbol": symbol,
+                        "type": "SELL",
+                        "entry": entry,
+                        "sl": sl,
+                        "risk": risk,
+                        "partial": False
+                    }
+
+                    active_trades.append(trade)
+                    done_stocks.add(symbol)
+
+                    send(f"SELL 🔻 {symbol}\nEntry: {entry}\nSL: {sl}")
 
         # ===== MANAGEMENT =====
         for trade in active_trades[:]:
 
             df = get_data(trade["symbol"])
-            if df is None:
+            if df is None or len(df) < 2:
                 continue
 
-            price = df.iloc[-1][4]
+            last = df.iloc[-1]
+            prev = df.iloc[-2]
+
+            price = last["close"]
 
             entry = trade["entry"]
             risk = trade["risk"]
 
-            # ===== PARTIAL EXIT (1R) =====
-            if not trade["partial_done"] and price >= entry + risk:
+            # ===== PARTIAL =====
+            if not trade["partial"]:
 
-                sell_qty = trade["qty"] / 2
-                trade["remaining_qty"] -= sell_qty
+                if trade["type"] == "BUY" and price >= entry + risk:
+                    trade["partial"] = True
+                    trade["sl"] = entry
+                    send(f"PARTIAL PROFIT 💰 {trade['symbol']}")
 
-                gain = sell_qty * price
-                fee = gain * fee_rate
+                elif trade["type"] == "SELL" and price <= entry - risk:
+                    trade["partial"] = True
+                    trade["sl"] = entry
+                    send(f"PARTIAL PROFIT 💰 {trade['symbol']}")
 
-                balance += (gain - fee)
+            # ===== TRAILING =====
+            if trade["partial"]:
 
-                trade["trail_sl"] = entry  # breakeven
-                trade["partial_done"] = True
+                if trade["type"] == "BUY":
+                    new_sl = prev["low"]
+                    if new_sl > trade["sl"]:
+                        trade["sl"] = new_sl
 
-                send(f"""
-PARTIAL PROFIT 💰
-
-{trade['symbol']}
-
-Sold 50%
-SL moved to breakeven
-""")
-
-            # ===== TRAILING STOP =====
-            if trade["partial_done"]:
-                new_sl = price - risk
-                if new_sl > trade["trail_sl"]:
-                    trade["trail_sl"] = new_sl
+                else:
+                    new_sl = prev["high"]
+                    if new_sl < trade["sl"]:
+                        trade["sl"] = new_sl
 
             # ===== EXIT =====
-            if price <= trade["trail_sl"]:
-
-                final_value = trade["remaining_qty"] * price
-                fee = final_value * fee_rate
-
-                balance += (final_value - fee)
-
+            if trade["type"] == "BUY" and price <= trade["sl"]:
+                send(f"EXIT 🚪 BUY {trade['symbol']} @ {price}")
                 active_trades.remove(trade)
 
-                send(f"""
-EXIT 🚪
+            elif trade["type"] == "SELL" and price >= trade["sl"]:
+                send(f"EXIT 🚪 SELL {trade['symbol']} @ {price}")
+                active_trades.remove(trade)
 
-{trade['symbol']}
-
-Exit Price: {price}
-Final Balance: {balance:.2f}
-""")
-
-        time.sleep(5)
+        time.sleep(60)
 
 run()
