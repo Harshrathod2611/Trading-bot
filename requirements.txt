@@ -1,3 +1,4 @@
+os
 yfinance
 python-binance
 pandas
