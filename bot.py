@@ -37,6 +37,15 @@ done_stocks = set()
 # ===== TIMEZONE =====
 ist = pytz.timezone('Asia/Kolkata')
 
+# ===== SAFE VALUE FUNCTION =====
+def safe_float(value):
+    try:
+        if isinstance(value, pd.Series):
+            return float(value.iloc[0])
+        return float(value)
+    except:
+        return None
+
 # ===== DATA =====
 def get_data(symbol):
     try:
@@ -66,152 +75,169 @@ def run():
 
     while True:
 
-        now = datetime.now(ist)
-        current_time = now.strftime("%H:%M")
+        try:
+            now = datetime.now(ist)
+            current_time = now.strftime("%H:%M")
 
-        # ===== MARKET HOURS FILTER =====
-        if current_time < "09:15" or current_time > "15:30":
-            time.sleep(60)
-            continue
+            # ===== MARKET HOURS FILTER =====
+            if current_time < "09:15" or current_time > "15:30":
+                time.sleep(60)
+                continue
 
-        # ===== BUILD RANGE =====
-        if "09:15" <= current_time <= "09:30":
+            # ===== BUILD RANGE =====
+            if "09:15" <= current_time <= "09:30":
 
-            for symbol in symbols:
-                df = get_data(symbol)
-                if df is None or len(df) == 0:
-                    continue
+                for symbol in symbols:
+                    df = get_data(symbol)
+                    if df is None or len(df) == 0:
+                        continue
 
-                last = df.iloc[-1]
+                    last = df.iloc[-1]
 
-                if symbol not in range_data:
-                    range_data[symbol] = {
-                        "high": last["high"],
-                        "low": last["low"]
-                    }
-                else:
-                    range_data[symbol]["high"] = max(
-                        range_data[symbol]["high"], last["high"]
-                    )
-                    range_data[symbol]["low"] = min(
-                        range_data[symbol]["low"], last["low"]
-                    )
+                    high_val = safe_float(last["high"])
+                    low_val = safe_float(last["low"])
 
-        # ===== BREAKOUT =====
-        if current_time > "09:30":
+                    if high_val is None or low_val is None:
+                        continue
 
-            for symbol in symbols:
+                    if symbol not in range_data:
+                        range_data[symbol] = {
+                            "high": high_val,
+                            "low": low_val
+                        }
+                    else:
+                        range_data[symbol]["high"] = max(
+                            range_data[symbol]["high"], high_val
+                        )
+                        range_data[symbol]["low"] = min(
+                            range_data[symbol]["low"], low_val
+                        )
 
-                if symbol in done_stocks:
-                    continue
+            # ===== BREAKOUT =====
+            if current_time > "09:30":
 
-                if symbol not in range_data:
-                    continue
+                for symbol in symbols:
 
-                df = get_data(symbol)
+                    if symbol in done_stocks:
+                        continue
+
+                    if symbol not in range_data:
+                        continue
+
+                    df = get_data(symbol)
+                    if df is None or len(df) < 2:
+                        continue
+
+                    last = df.iloc[-1]
+
+                    close = safe_float(last["close"])
+                    high = range_data[symbol]["high"]
+                    low = range_data[symbol]["low"]
+
+                    if close is None:
+                        continue
+
+                    # ===== BUY =====
+                    if close > high:
+                        entry = close
+                        sl = low
+                        risk = entry - sl
+
+                        if risk <= 0:
+                            continue
+
+                        trade = {
+                            "symbol": symbol,
+                            "type": "BUY",
+                            "entry": entry,
+                            "sl": sl,
+                            "risk": risk,
+                            "partial": False
+                        }
+
+                        active_trades.append(trade)
+                        done_stocks.add(symbol)
+
+                        send(f"BUY 🚀 {symbol}\nEntry: {entry:.2f}\nSL: {sl:.2f}")
+
+                    # ===== SELL =====
+                    elif close < low:
+                        entry = close
+                        sl = high
+                        risk = sl - entry
+
+                        if risk <= 0:
+                            continue
+
+                        trade = {
+                            "symbol": symbol,
+                            "type": "SELL",
+                            "entry": entry,
+                            "sl": sl,
+                            "risk": risk,
+                            "partial": False
+                        }
+
+                        active_trades.append(trade)
+                        done_stocks.add(symbol)
+
+                        send(f"SELL 🔻 {symbol}\nEntry: {entry:.2f}\nSL: {sl:.2f}")
+
+            # ===== TRADE MANAGEMENT =====
+            for trade in active_trades[:]:
+
+                df = get_data(trade["symbol"])
                 if df is None or len(df) < 2:
                     continue
 
                 last = df.iloc[-1]
-                close = last["close"]
+                prev = df.iloc[-2]
 
-                high = range_data[symbol]["high"]
-                low = range_data[symbol]["low"]
+                price = safe_float(last["close"])
+                entry = trade["entry"]
+                risk = trade["risk"]
 
-                # ===== BUY =====
-                if close > high:
-                    entry = close
-                    sl = low
-                    risk = entry - sl
+                if price is None:
+                    continue
 
-                    if risk <= 0:
-                        continue
+                # ===== PARTIAL =====
+                if not trade["partial"]:
 
-                    trade = {
-                        "symbol": symbol,
-                        "type": "BUY",
-                        "entry": entry,
-                        "sl": sl,
-                        "risk": risk,
-                        "partial": False
-                    }
+                    if trade["type"] == "BUY" and price >= entry + risk:
+                        trade["partial"] = True
+                        trade["sl"] = entry
+                        send(f"PARTIAL 💰 {trade['symbol']}")
 
-                    active_trades.append(trade)
-                    done_stocks.add(symbol)
+                    elif trade["type"] == "SELL" and price <= entry - risk:
+                        trade["partial"] = True
+                        trade["sl"] = entry
+                        send(f"PARTIAL 💰 {trade['symbol']}")
 
-                    send(f"BUY 🚀 {symbol}\nEntry: {entry:.2f}\nSL: {sl:.2f}")
+                # ===== TRAILING =====
+                if trade["partial"]:
 
-                # ===== SELL =====
-                elif close < low:
-                    entry = close
-                    sl = high
-                    risk = sl - entry
+                    prev_high = safe_float(prev["high"])
+                    prev_low = safe_float(prev["low"])
 
-                    if risk <= 0:
-                        continue
+                    if trade["type"] == "BUY" and prev_low is not None:
+                        if prev_low > trade["sl"]:
+                            trade["sl"] = prev_low
 
-                    trade = {
-                        "symbol": symbol,
-                        "type": "SELL",
-                        "entry": entry,
-                        "sl": sl,
-                        "risk": risk,
-                        "partial": False
-                    }
+                    elif trade["type"] == "SELL" and prev_high is not None:
+                        if prev_high < trade["sl"]:
+                            trade["sl"] = prev_high
 
-                    active_trades.append(trade)
-                    done_stocks.add(symbol)
+                # ===== EXIT =====
+                if trade["type"] == "BUY" and price <= trade["sl"]:
+                    send(f"EXIT 🚪 BUY {trade['symbol']} @ {price:.2f}")
+                    active_trades.remove(trade)
 
-                    send(f"SELL 🔻 {symbol}\nEntry: {entry:.2f}\nSL: {sl:.2f}")
+                elif trade["type"] == "SELL" and price >= trade["sl"]:
+                    send(f"EXIT 🚪 SELL {trade['symbol']} @ {price:.2f}")
+                    active_trades.remove(trade)
 
-        # ===== TRADE MANAGEMENT =====
-        for trade in active_trades[:]:
-
-            df = get_data(trade["symbol"])
-            if df is None or len(df) < 2:
-                continue
-
-            last = df.iloc[-1]
-            prev = df.iloc[-2]
-
-            price = last["close"]
-            entry = trade["entry"]
-            risk = trade["risk"]
-
-            # ===== PARTIAL =====
-            if not trade["partial"]:
-
-                if trade["type"] == "BUY" and price >= entry + risk:
-                    trade["partial"] = True
-                    trade["sl"] = entry
-                    send(f"PARTIAL 💰 {trade['symbol']}")
-
-                elif trade["type"] == "SELL" and price <= entry - risk:
-                    trade["partial"] = True
-                    trade["sl"] = entry
-                    send(f"PARTIAL 💰 {trade['symbol']}")
-
-            # ===== TRAILING =====
-            if trade["partial"]:
-
-                if trade["type"] == "BUY":
-                    new_sl = prev["low"]
-                    if new_sl > trade["sl"]:
-                        trade["sl"] = new_sl
-
-                else:
-                    new_sl = prev["high"]
-                    if new_sl < trade["sl"]:
-                        trade["sl"] = new_sl
-
-            # ===== EXIT =====
-            if trade["type"] == "BUY" and price <= trade["sl"]:
-                send(f"EXIT 🚪 BUY {trade['symbol']} @ {price:.2f}")
-                active_trades.remove(trade)
-
-            elif trade["type"] == "SELL" and price >= trade["sl"]:
-                send(f"EXIT 🚪 SELL {trade['symbol']} @ {price:.2f}")
-                active_trades.remove(trade)
+        except Exception as e:
+            print("ERROR:", e)
 
         time.sleep(60)
 
